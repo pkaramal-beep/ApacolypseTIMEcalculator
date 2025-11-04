@@ -1,0 +1,262 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Apocalypse Time Zone Calculator</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  fieldset { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin: 0 0 16px; }
+  legend { padding: 0 6px; font-weight: 600; }
+  label { display: block; margin: 10px 0 4px; font-weight: 600; }
+  input, select, button { font-size: 14px; padding: 8px; }
+  .row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
+  .out { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 12px; }
+  .small { color: #666; font-size: 12px; }
+  .inline { display: flex; gap: 8px; align-items: center; }
+  .inline input[type=number] { width: 90px; }
+</style>
+</head>
+<body>
+  <h1>Apocalypse Time Zone Calculator</h1>
+  <p class="small">
+    Apocalypse Time (AT) uses 24-hour format and is tied to UTC: <strong>UTC = AT + 2h</strong>.
+    That makes 24:00 AT equal to 02:00 UTC. In EST (UTCâˆ’5) thatâ€™s 21:00; in EDT (UTCâˆ’4) thatâ€™s 22:00.
+  </p>
+
+  <fieldset>
+    <legend>Convert Apocalypse Time âžœ Any Time Zone</legend>
+    <div class="row">
+      <div>
+        <label for="atDate">Apocalypse Date</label>
+        <input id="atDate" type="date" />
+      </div>
+      <div>
+        <label>Apocalypse Time (24-hour)</label>
+        <div class="inline">
+          <input id="atHour" type="number" min="0" max="24" step="1" value="0" /> :
+          <input id="atMinute" type="number" min="0" max="59" step="1" value="0" />
+        </div>
+        <div class="small">Allowed range: 00:00â€“24:00 (24:00 only with minutes = 00).</div>
+      </div>
+      <div>
+        <label for="use2400">Use 24:00 (adds 1 day)</label>
+        <input id="use2400" type="checkbox" />
+      </div>
+      <div>
+        <label for="tzTarget">Target Time Zone</label>
+        <select id="tzTarget"></select>
+      </div>
+      <div>
+        <button id="btnATToTZ">Convert</button>
+      </div>
+    </div>
+    <div id="outATToTZ" class="out" aria-live="polite"></div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Convert Local Time Zone âžœ Apocalypse Time</legend>
+    <div class="row">
+      <div>
+        <label for="localDate">Local Date</label>
+        <input id="localDate" type="date" />
+      </div>
+      <div>
+        <label for="localTime">Local Time</label>
+        <input id="localTime" type="time" step="60" value="00:00" />
+      </div>
+      <div>
+        <label for="tzLocal">Local Time Zone</label>
+        <select id="tzLocal"></select>
+      </div>
+      <div>
+        <button id="btnTZToAT">Convert</button>
+      </div>
+    </div>
+    <div id="outTZToAT" class="out" aria-live="polite"></div>
+  </fieldset>
+
+  <script>
+    // Key rule: UTC = AT + 2h  (equivalently AT = UTC âˆ’ 2h)
+
+    const tzTarget = document.getElementById('tzTarget');
+    const tzLocal = document.getElementById('tzLocal');
+    const outATToTZ = document.getElementById('outATToTZ');
+    const outTZToAT = document.getElementById('outTZToAT');
+    const atDate = document.getElementById('atDate');
+    const atHour = document.getElementById('atHour');
+    const atMinute = document.getElementById('atMinute');
+    const use2400 = document.getElementById('use2400');
+    const localDate = document.getElementById('localDate');
+    const localTime = document.getElementById('localTime');
+
+    // Populate date inputs with today
+    const todayIso = new Date().toISOString().slice(0, 10);
+    atDate.value = todayIso;
+    localDate.value = todayIso;
+
+    // Populate time zones (all IANA zones supported by the browser)
+    function getSupportedTimeZones() {
+      if (Intl.supportedValuesOf) {
+        try { return Intl.supportedValuesOf('timeZone'); } catch (_) {}
+      }
+      return [
+        'UTC','America/New_York','America/Chicago','America/Denver','America/Los_Angeles',
+        'America/Sao_Paulo','Europe/London','Europe/Berlin','Europe/Paris','Europe/Moscow',
+        'Africa/Johannesburg','Asia/Dubai','Asia/Kolkata','Asia/Shanghai','Asia/Tokyo',
+        'Australia/Sydney','Pacific/Auckland'
+      ];
+    }
+
+    function populateTZ(selectEl) {
+      const zones = getSupportedTimeZones();
+      zones.forEach(z => {
+        const opt = document.createElement('option');
+        opt.value = z; opt.textContent = z;
+        selectEl.appendChild(opt);
+      });
+    }
+
+    populateTZ(tzTarget);
+    populateTZ(tzLocal);
+
+    // Set defaults: your EST/EDT region is America/New_York
+    tzTarget.value = 'America/New_York';
+    tzLocal.value = 'America/New_York';
+
+    function clampAT() {
+      let h = Number(atHour.value) || 0;
+      let m = Number(atMinute.value) || 0;
+      h = Math.max(0, Math.min(24, h));
+      m = Math.max(0, Math.min(59, m));
+      if (h === 24) m = 0;
+      atHour.value = String(h);
+      atMinute.value = String(m);
+      return { h, m };
+    }
+
+    function formatInZone24(dateUtc, timeZone, opts={}) {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+        weekday: opts.weekday ? 'short' : undefined
+      });
+      return fmt.format(dateUtc);
+    }
+
+    function formatInZone12(dateUtc, timeZone, opts={}) {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: true,
+        weekday: opts.weekday ? 'short' : undefined
+      });
+      return fmt.format(dateUtc);
+    }
+
+    function displayOffsets(dateUtc, zones) {
+      const parts = zones.map(z => {
+        const s = formatInZone24(dateUtc, z, { weekday: true });
+        return `${z}: ${s}`;
+      });
+      return parts.join('<br/>');
+    }
+
+    // AT âžœ TZ: show both 24h and 12h for target zone
+    document.getElementById('btnATToTZ').addEventListener('click', () => {
+      let ymd = atDate.value || todayIso;
+      let [y, mo, d] = ymd.split('-').map(Number);
+
+      let { h: hourAT, m: minuteAT } = clampAT();
+
+      if (use2400.checked) {
+        hourAT = 24; minuteAT = 0;
+      }
+
+      if (hourAT === 24) {
+        const dt = new Date(Date.UTC(y, mo - 1, d));
+        dt.setUTCDate(dt.getUTCDate() + 1);
+        y = dt.getUTCFullYear(); mo = dt.getUTCMonth() + 1; d = dt.getUTCDate();
+        hourAT = 0;
+      }
+
+      const utc = new Date(Date.UTC(y, mo - 1, d, 0, 0, 0));
+      utc.setUTCHours(utc.getUTCHours() + hourAT + 2);
+      utc.setUTCMinutes(utc.getUTCMinutes() + minuteAT);
+
+      const tz = tzTarget.value;
+      const target24 = formatInZone24(utc, tz, { weekday: true });
+      const target12 = formatInZone12(utc, tz, { weekday: true });
+
+      const refs = displayOffsets(utc, [
+        'America/New_York','UTC','Europe/London','Europe/Berlin','Asia/Kolkata','Asia/Tokyo','Australia/Sydney'
+      ]);
+
+      outATToTZ.innerHTML = `
+        <div><strong>Result in ${tz}</strong></div>
+        <div>- Military (24h): ${target24}</div>
+        <div>- 12-hour: ${target12}</div>
+        <div class="small" style="margin-top:8px">
+          Input AT (24h): ${String((use2400.checked ? 24 : Number(atHour.value)||0)).padStart(2,'0')}:${String(Number(atMinute.value)||0).padStart(2,'0')}
+        </div>
+        <div style="margin-top:8px"><strong>Reference zones (24h)</strong><br/>${refs}</div>
+      `;
+    });
+
+    // TZ âžœ AT (AT remains 24h)
+    document.getElementById('btnTZToAT').addEventListener('click', () => {
+      const tz = tzLocal.value;
+      const ymd = localDate.value || todayIso;
+      const [y, mo, d] = ymd.split('-').map(Number);
+
+      const [h, m] = String(document.getElementById('localTime').value || '00:00').split(':').map(Number);
+      const wall = new Date(Date.UTC(y, mo - 1, d, h || 0, m || 0, 0));
+
+      function getOffsetMinutes(dateUtc, zone) {
+        const f = new Intl.DateTimeFormat('en-CA', {
+          timeZone: zone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit'
+        });
+        const fUtc = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'UTC', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit'
+        });
+        const zParts = f.formatToParts(dateUtc);
+        const uParts = fUtc.formatToParts(dateUtc);
+        function get(partArr, type) { return Number(partArr.find(p => p.type === type).value); }
+        const zDate = Date.UTC(get(zParts,'year'), get(zParts,'month')-1, get(zParts,'day'), get(zParts,'hour'), get(zParts,'minute'));
+        const uDate = Date.UTC(get(uParts,'year'), get(uParts,'month')-1, get(uParts,'day'), get(uParts,'hour'), get(uParts,'minute'));
+        return Math.round((zDate - uDate) / 60000);
+      }
+
+      let guessUtc = wall;
+      for (let i = 0; i < 3; i++) {
+        const offsetMin = getOffsetMinutes(guessUtc, tz);
+        const nextUtc = new Date(Date.UTC(y, mo - 1, d, h || 0, m || 0, 0) - offsetMin * 60000);
+        if (Math.abs(nextUtc - guessUtc) < 1000) { break; }
+        guessUtc = nextUtc;
+      }
+      const utc = guessUtc;
+
+      // AT = UTC âˆ’ 2h
+      const atUtc = new Date(utc.getTime() - 2 * 60 * 60 * 1000);
+
+      const yAT = atUtc.getUTCFullYear();
+      const mAT = String(atUtc.getUTCMonth() + 1).padStart(2, '0');
+      const dAT = String(atUtc.getUTCDate()).padStart(2, '0');
+      const hhAT = String(atUtc.getUTCHours()).padStart(2, '0');
+      const mmAT = String(atUtc.getUTCMinutes()).padStart(2, '0');
+
+      const info = `Apocalypse Date: ${yAT}-${mAT}-${dAT}, Time: ${hhAT}:${mmAT} (AT)`;
+      outTZToAT.innerHTML = `
+        <div><strong>Result</strong>: ${info}</div>
+        <div class="small" style="margin-top:8px">
+          Note: If you expect 24:00 AT, use 00:00 AT on the next Apocalypse date.
+        </div>
+      `;
+    });
+  </script>
+</body>
+</html>
